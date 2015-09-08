@@ -10,6 +10,7 @@ import theano.tensor as TT
 import warnings
 
 from . import util
+from .shared_dataset import SharedDataset
 
 logging = climate.get_logger(__name__)
 
@@ -47,6 +48,8 @@ def build(algo, loss, params=None, inputs=None, updates=(), monitors=(),
     optimizer : :class:`Optimizer`
         An optimizer instance.
     '''
+
+
     return Optimizer.build(algo, loss, params, inputs,
                            updates=updates, monitors=monitors,
                            monitor_gradients=monitor_gradients)
@@ -120,7 +123,48 @@ class Optimizer(util.Registrar(str('Base'), (), {})):
         self.f_step = theano.function(self._inputs,
                                       self._monitor_exprs,
                                       updates=updates,
-                                      name=label)
+                                      name = label)
+    
+     
+
+    def _compile_with_givens(self, train, valid=None):
+        '''Compile the Theano functions for evaluating and updating our model.
+        Using theano function's Param `givens` to update inputs by shared variables.
+        '''
+        valid_ = valid or train
+        logging.info('compiling evaluation function with givens')
+        eval_input_index = theano.tensor.lscalar('eval_input_index')
+        end_eval_input_index = theano.tensor.lscalar('end_eval_input_index')
+        self.f_eval = theano.function([eval_input_index, end_eval_input_index],
+                                      self._monitor_exprs,
+                                      updates=self._updates,
+                                      givens=list(self._get_givens(valid_, eval_input_index, end_eval_input_index)),
+                                      name='evaluation')
+        label = self.__class__.__name__
+        logging.info('compiling %s function with givens', label)
+        updates = list(self._updates) + list(self._get_updates())
+        train_input_index = theano.tensor.lscalar('train_input_index')
+        end_train_input_index = theano.tensor.lscalar('end_train_input_index')
+        self.f_step = theano.function([train_input_index, end_train_input_index],
+                                      self._monitor_exprs,
+                                      updates=updates,
+                                      givens=list(self._get_givens(train, train_input_index, end_train_input_index)),
+                                      name=label)                               
+
+    def _get_givens(self, shared_dataset, index, end_index):
+        '''Get the mapping from input to  shared variable.
+
+        Yields
+        -------
+        givens : (input, shared variable) tuples
+        '''
+        
+        assert(isinstance(shared_dataset, SharedDataset)), "input dataset is not the type of SharedDataset"                       
+        inputs = self._inputs
+        shareds = shared_dataset.get_shareds()
+
+        for x, shared in zip(inputs, shareds):
+            yield  (x, shared[index:end_index])
 
     def _get_updates(self):
         '''Get parameter update expressions for performing optimization.
@@ -385,7 +429,17 @@ class Optimizer(util.Registrar(str('Base'), (), {})):
         logging.info('-- nesterov = %s', nesterov)
 
         self._prepare(**kwargs)
-        self._compile()
+
+        #TODO: ????
+        if isinstance(train, SharedDataset):
+            assert(valid ==None or isinstance(valid, SharedDataset)), "train and valid should be both \
+                        the type of SharedDataset"
+            train.make_shareds(self._inputs)
+            if valid:
+                valid.make_shareds(self._inputs)
+            self._compile_with_givens(train, valid)
+        else:
+            self._compile()    
 
         if valid is None:
             valid = train
@@ -394,6 +448,7 @@ class Optimizer(util.Registrar(str('Base'), (), {})):
         while True:
             if not iteration % self.validate_every:
                 try:
+                    
                     validation = self.evaluate(valid)
                 except KeyboardInterrupt:
                     logging.info('interrupted!')
@@ -445,6 +500,7 @@ class Optimizer(util.Registrar(str('Base'), (), {})):
         train_monitors : dict
             A dictionary mapping monitor names to values.
         '''
-        values = [self.f_step(*x) for x in dataset]
+        values = [self.f_step(*x) for x in dataset ]
         return collections.OrderedDict(
             zip(self._monitor_names, np.mean(values, axis=0)))
+  

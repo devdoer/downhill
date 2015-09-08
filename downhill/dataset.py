@@ -13,8 +13,11 @@ import numpy as np
 
 logging = climate.get_logger(__name__)
 
+class BaseDataset(object):
+    def __iter__(self):
+        raise NotImplementedError
 
-class Dataset:
+class Dataset(BaseDataset):
     '''This class handles batching and shuffling a dataset.
 
     In ``downhill``, losses are optimized using sets of data collected from the
@@ -187,3 +190,5 @@ class Dataset:
                 self.shuffle()
             self._index = 0
         return value
+
+
